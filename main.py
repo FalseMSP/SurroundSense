@@ -51,7 +51,7 @@ def play_tone(y_position, image_height, duration=500, depth=0.5):
     audio = audio.astype(np.int16)
 
     # Adjust volume based on depth
-    volume = depth
+    volume = depth * 0.1
     audio = (audio * volume).astype(np.int16)
 
     # Play the tone
@@ -102,6 +102,8 @@ def get_object_message(object_counts):
     return " and ".join(messages)
 
 while True:
+    for i in range(0,10):
+        cap.read()
     success, img = cap.read()
     if not success:
         break
