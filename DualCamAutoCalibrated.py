@@ -103,7 +103,7 @@ def play_tone(y_position, image_height, duration=500, depth=0.5):
     audio = audio.astype(np.int16)
 
     # Adjust volume based on depth
-    volume = depth * 0.1
+    volume = depth * 0.4
     audio = (audio * volume).astype(np.int16)
 
     # Play the tone
