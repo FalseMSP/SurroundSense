@@ -3,20 +3,31 @@ import cv2
 import numpy as np
 import math
 import time
-from gtts import gTTS
+import pyttsx3
 from playsound import playsound
 import os
 import threading
 import simpleaudio as sa
+import datetime
+#import smbus
+
+# I2C bus
+#bus = smbus.SMBus(1)  # For Jetson boards, /dev/i2c-1 is typically used
+
+# PCF8591 address
+#PCF8591_ADDRESS = 0x48
 
 # Constants
 FOCAL_LENGTH = 930.3284425137067  # In PIXELS
-DIST_BETWEEN_CAMERAS = 0.11945  # In METERS, this should be the actual distance between your cameras
+DIST_BETWEEN_CAMERAS = 0.11945  # In meters
 the_T = np.array([DIST_BETWEEN_CAMERAS, 0, 0], dtype=np.float64)
-calibration_path = "/home/bob/SurroundSense/calibration/01-08-24-14-09-rms-0.59-zed-0-ximea-0"
+calibration_path = "/home/bob/SurroundSense/calibration/08-08-24-15-05-rms-1.15-zed-0-ximea-0"
 
 # init flags
-swapLeft = True
+swapLeft = False
+disableProg = False
+TTS = True
+beeper = True
 # Load YOLO model
 try:
     model = YOLO("yolov8n.pt")
@@ -41,6 +52,11 @@ cap2 = cv2.VideoCapture(0)
 cap2.set(3, 640)
 cap2.set(4, 480)
 
+# Initialize the pyttsx3 engine
+engine = pyttsx3.init()
+
+lastSpeak = ""
+
 # Object classes
 classNames = ["person", "bicycle", "car", "motorbike", "aeroplane", "bus", "train", "truck", "boat",
               "traffic light", "fire hydrant", "stop sign", "parking meter", "bench", "bird", "cat",
@@ -52,29 +68,42 @@ classNames = ["person", "bicycle", "car", "motorbike", "aeroplane", "bus", "trai
               "diningtable", "toilet", "tvmonitor", "laptop", "mouse", "remote", "keyboard", "cell phone",
               "microwave", "oven", "toaster", "sink", "refrigerator", "book", "clock", "vase", "scissors",
               "teddy bear", "hair drier", "toothbrush"]
+ignore_list = [
+    "car", "motorbike", "aeroplane", "bus", "train", "truck", "boat",
+    "traffic light", "fire hydrant", "stop sign", "parking meter", "bird", "cat",
+    "dog", "horse", "sheep", "cow", "elephant", "bear", "zebra", "giraffe", "umbrella",
+    "suitcase", "frisbee", "skis", "snowboard", "kite", "baseball bat",
+    "baseball glove", "skateboard", "surfboard", "tennis racket", "wine glass",
+    "banana", "apple", "sandwich", "orange", "broccoli",
+    "carrot", "hot dog", "pizza", "donut", "cake",
+    "toilet",
+    "microwave", "oven", "toaster", "sink", "refrigerator", "clock", "vase",
+    "teddy bear", "hair drier", "toothbrush"
+]
 
 # Function to speak text using gTTS
 def speak(text):
     try:
         print(f"Starting to speak: {text}")
-        tts = gTTS(text=text, lang='en', slow=False)
-        filename = 'temp_audio.mp3'
-        tts.save(filename)
-        
-        # Define a function to play sound in a separate thread
-        def play_sound(filename):
-            playsound(filename)
-            os.remove(filename)  # Clean up the temporary audio file
+
+        # Set properties if needed
+        engine.setProperty('rate', 150)    # Speed percent (can go over 100)
+        engine.setProperty('volume', 1)     # Volume 0-1
+
+        # Define a function to speak text
+        def speak_text(text):
+            engine.say(text)
+            engine.runAndWait()
             print("Finished speaking")
         
-        # Create a thread to play the sound
-        threading.Thread(target=play_sound, args=(filename,), daemon=True).start()
+        # Create a thread to speak the text
+        threading.Thread(target=speak_text, args=(text,), daemon=True).start()
         
     except Exception as e:
         print(f"Exception during speech: {e}")
 
 # Function to play a tone based on object height and depth
-def play_tone(y_position, image_height, duration=500, depth=0.5):
+def play_tone(y_position, image_height, duration=250, depth=0.5):
     """
     Play a tone based on object height and depth.
 
@@ -111,13 +140,61 @@ def play_tone(y_position, image_height, duration=500, depth=0.5):
     play_obj.wait_done()
 # Set up defaults for disparity calculation
 max_disparity = 128
-stereoProcessor = cv2.StereoSGBM_create(0, max_disparity, 21)
+stereoProcessor = cv2.StereoSGBM_create(
+    minDisparity=0,
+    numDisparities=16 * 4,  # Must be divisible by 16
+    blockSize=4,
+    P1=8 * 3 * 4 ** 2,  # Default value: 8*3*blockSize^2
+    P2=32 * 3 * 4 ** 2,  # Default value: 32*3*blockSize^2
+    disp12MaxDiff=1,
+    preFilterCap=63,
+    uniquenessRatio=10,
+    speckleWindowSize=100,
+    speckleRange=32
+)
 
 keep_processing = True
 apply_colourmap = False
 
 # Time tracking
 last_print_time = time.time()
+
+# Joystick functions
+def read_analog_input(channel):
+    if channel < 0 or channel > 3:
+        raise ValueError("Channel must be between 0 and 3")
+    # Command to select the channel (0x40 is the base command, add channel number)
+    bus.write_byte(PCF8591_ADDRESS, 0x40 | channel)
+    time.sleep(0.1)  # Wait for the conversion to complete
+    return bus.read_byte(PCF8591_ADDRESS)  # Read the ADC value
+
+def direction():
+    # Read analog values from channels
+    x_value = read_analog_input(0)
+    y_value = read_analog_input(2)
+    button_value = read_analog_input(1)
+    
+    # Determine if the button is pressed
+    button_pressed = button_value <= 30
+    
+    # Determine the joystick direction
+    if x_value <= 30:
+        x = -1  # Left
+    elif x_value >= 225:
+        x = 1   # Right
+    else:
+        x = 0
+
+    if y_value <= 30:
+        y = -1  # Up
+    elif y_value >= 225:
+        y = 1   # Down
+    else:
+        y = 0
+    
+    # Return (x, y) coordinates and button pressed state
+    return (x, y, button_pressed)
+
 
 # Helper for proccess_frame
 def mode(a, axis=0):
@@ -138,6 +215,7 @@ def mode(a, axis=0):
 
 def process_frame(img, results, disparity):
     global last_print_time
+    global lastSpeak
 
     img_center_x = img.shape[1] // 2
     img_center_y = img.shape[0] // 2
@@ -145,6 +223,7 @@ def process_frame(img, results, disparity):
     closest_box = None
     closest_class = None
     closest_confidence = None
+    detected_objects = []
 
     for r in results:
         boxes = r.boxes
@@ -154,13 +233,20 @@ def process_frame(img, results, disparity):
             box_center_x = (x1 + x2) // 2
             box_center_y = (y1 + y2) // 2
             distance = math.sqrt((box_center_x - img_center_x) ** 2 + (box_center_y - img_center_y) ** 2)
+            if classNames[int(box.cls[0])] == "clock":
+                currtime = datetime.datetime.now()
+                currtime = currtime.strftime("%H:%M")
+                if TTS:
+                    speak(f"The time is currently {currtime}")
 
-            if distance < min_distance:
+            if distance < min_distance and (classNames[int(box.cls[0])] not in ignore_list):
                 min_distance = distance
                 closest_box = (x1, y1, x2, y2)
                 closest_confidence = math.ceil((box.conf[0] * 100)) / 100
                 closest_class = int(box.cls[0])
+                detected_objects.append(closest_class)
 
+    # Process and announce the most important object not in the ignore list
     if closest_box is not None:
         x1, y1, x2, y2 = closest_box
         cv2.rectangle(img, (x1, y1), (x2, y2), (255, 0, 255), 3)
@@ -169,63 +255,187 @@ def process_frame(img, results, disparity):
         fontScale = 1
         color = (255, 0, 0)
         thickness = 2
-        cv2.putText(img, f"{classNames[closest_class]} {closest_confidence}", org, font, fontScale, color, thickness)
+        object_name = classNames[closest_class]
 
-        # Calculate central 10% region of the bounding box
-        box_width = x2 - x1
-        box_height = y2 - y1
-        central_region_width = int(box_width * 0.1)
-        central_region_height = int(box_height * 0.1)
+        if object_name not in ignore_list:
+            cv2.putText(img, f"{object_name} {closest_confidence}", org, font, fontScale, color, thickness)
 
-        # Calculate central coordinates
-        central_x1 = x1 + (box_width - central_region_width) // 2
-        central_y1 = y1 + (box_height - central_region_height) // 2
-        central_x2 = central_x1 + central_region_width
-        central_y2 = central_y1 + central_region_height
+            # Calculate central 10% region of the bounding box
+            box_width = x2 - x1
+            box_height = y2 - y1
+            central_region_width = int(box_width * 0.1)
+            central_region_height = int(box_height * 0.1)
 
-        # Extract disparity values within the central 10% region
-        box_disparities = []
-        for i in range(central_y1, central_y2):
-            for j in range(central_x1, central_x2):
-                disparity_value = disparity[i, j]
-                if disparity_value > 0:  # Ignore invalid disparity values
-                    box_disparities.append(disparity_value)
+            # Calculate central coordinates
+            central_x1 = x1 + (box_width - central_region_width) // 2
+            central_y1 = y1 + (box_height - central_region_height) // 2
+            central_x2 = central_x1 + central_region_width
+            central_y2 = central_y1 + central_region_height
 
-        if box_disparities:
-            # Calculate the median disparity value
-            most_frequent, counts = mode(np.array(box_disparities))
-            median_disparity = most_frequent[0]
-            # Convert baseline from meters to the same unit used in the calculation
-            focal_length = FOCAL_LENGTH  # Pixels
-            baseline = DIST_BETWEEN_CAMERAS  # Meters
+            # Extract disparity values within the central 10% region
+            box_disparities = []
+            for i in range(central_y1, central_y2):
+                for j in range(central_x1, central_x2):
+                    disparity_value = disparity[i, j]
+                    if disparity_value > 0:  # Ignore invalid disparity values
+                        box_disparities.append(disparity_value)
 
-            # Calculate distance in meters
-            if median_disparity > 0:
-                distance = (focal_length * baseline) / median_disparity  # distance in meters
-                distance *= 7 * 1.93934426
-                object_name = classNames[closest_class]
-                print(f"Distance to {object_name}: {distance:.2f} meters")
-                distance /= 5 # Max Loudness is 1
-                if distance >= 1:
-                    distance = 1 # Clamping for the volume of tone
-                distance = 1-distance
-                play_tone(central_y1,img.shape[0],250,distance)
+            if box_disparities:
+                # Calculate the median disparity value
+                most_frequent, counts = mode(np.array(box_disparities))
+                median_disparity = most_frequent[0]
+                # Convert baseline from meters to the same unit used in the calculation
+                focal_length = FOCAL_LENGTH  # Pixels
+                baseline = DIST_BETWEEN_CAMERAS  # Meters
 
-                # Print and say the object
-                print(f"{object_name} ahead")
-                speak(f"{object_name} ahead")
+                # Calculate distance in meters
+                if median_disparity > 0:
+                    distance = (focal_length * baseline) / median_disparity  # distance in meters
+                    distance *= 7 * 1.93934426
+                    realdist = distance
+                    distance /= 5 # Max Loudness is 1
+                    if lastSpeak == f"{object_name} {realdist:.0f} meters ahead":
+                        TTS = False
+                    else:
+                        TTS = True
+                    lastSpeak = f"{object_name} {realdist:.0f} meters ahead"
+                    if distance >= 1:
+                        distance = 1 # Clamping for the volume of tone
+                    distance = 1-distance
+                    if beeper:
+                        play_tone(central_y1,img.shape[0],250,distance)
+                    if realdist < 1:
+                        print(f"{object_name} {realdist:.2f} meters ahead")
+                        if TTS:
+                            speak(f"{object_name} less than a meter ahead")
+                        return
+                    if realdist > 7:
+                        return
+                    # Print and say the object
+                    print(f"{object_name} {realdist:.2f} meters ahead")
+                    if TTS:
+                        speak(f"{object_name} {realdist:.0f} meters ahead")
+def disparity_to_distance(disparity, focal_length, baseline):
+    """
+    Convert disparity value to distance.
 
+    :param disparity: Disparity value.
+    :param focal_length: Focal length of the camera.
+    :param baseline: Distance between the cameras.
+    :return: Distance in meters.
+    """
+    if disparity > 0:
+        distance = (focal_length * baseline) / disparity
+        return distance
+    return float('inf')  # Return a large number if disparity is zero or invalid
+
+
+def find_close_objects(img, disparity, focal_length, baseline, distance_threshold):
+    """
+    Find objects that are less than `distance_threshold` meters away in the center of the image.
+
+    :param img: Input image.
+    :param disparity: Disparity map.
+    :param focal_length: Focal length of the camera.
+    :param baseline: Distance between the cameras.
+    :param distance_threshold: Distance threshold in meters.
+    :return: List of tuples (distance, y_coordinate).
+    """
+    img_center_x = img.shape[1] // 2
+    img_center_y = img.shape[0] // 2
+    central_region_width = img.shape[1] * 0.2  # 20% of image width
+    central_region_height = img.shape[0] * 0.8  # 80% of image height
+
+    # Define the region of interest (ROI) for the central part of the image
+    roi_x1 = int(img_center_x - central_region_width // 2)
+    roi_x2 = int(img_center_x + central_region_width // 2)
+    roi_y1 = int(img_center_y - central_region_height // 2)
+    roi_y2 = int(img_center_y + central_region_height // 2)
+
+    close_objects = []
+
+    # Iterate over the central region to find close objects
+    for y in range(max(roi_y1, 0), min(roi_y2, img.shape[0])):
+        for x in range(max(roi_x1, 0), min(roi_x2, img.shape[1])):
+            disparity_value = disparity[y, x]
+            distance = disparity_to_distance(disparity_value, focal_length, baseline)
+            if distance < distance_threshold:
+                close_objects.append((distance, y, x))
+
+    return close_objects
+
+# Initialize a Lock object
+thread_lock = threading.Lock()
+
+def proccessResults(undistorted_rectifiedL, disparity):
+    # Acquire the lock
+    with thread_lock:
+        # Process both frames with YOLO
+        results1 = model(undistorted_rectifiedL, stream=True)
+        # results2 = model(undistorted_rectifiedR, stream=True)
+
+        # Speak + Print Results
+        process_frame(undistorted_rectifiedL, results1, disparity)
+        # process_frame(undistorted_rectifiedR, results2, disparity)
+
+button_pressed = False
+x = 0
+y = 0
 
 while True:
+    # x, y, button_pressed = direction()
+    # Handle on/off through joystick press
+    if button_pressed == True:
+        disableProg = not disableProg
+        # Release Camera
+        if disableProg:
+            cap1.release()
+            cap2.release()
+            speak("Power Off")
+        else: # Reactivate Camera
+            cap1 = cv2.VideoCapture(1)
+            cap1.set(3, 640)
+            cap1.set(4, 480)
+            
+            cap2 = cv2.VideoCapture(0)
+            cap2.set(3, 640)
+            cap2.set(4, 480)
+            speak("Power On")
+            TTS = True
+            beeper = True
+        time.sleep(2)
+    if disableProg:
+        time.sleep(0.1)
+        continue;
+
+    if x == 1:
+        # Right, TTS ON
+        TTS = True
+        speak("Speaking on")
+    elif x == -1:
+        # LEFT, TTS OFF
+        TTS = False
+        speak("Speaking off")
+
+    if y == 1:
+        # UP, Beeper OFF
+        beeper = True
+        speak("Beeper On")
+    elif y == -1:
+        # DOWN, Beeper ON
+        beeper = False
+        speak("Beeper Off")
+    # Remove buffer from camera feeed
     for i in range(0, 25):
         cap1.read()
-        cap2.read()
+        cap2.read() 
     if swapLeft:
         success1, frameL = cap1.read()
         success2, frameR = cap2.read()
     else:
         success1, frameL = cap2.read()
         success2, frameR = cap1.read()
+    
     if not success1 or not success2:
         print("Error: Could not read from one of the cameras.")
         break
@@ -241,6 +451,7 @@ while True:
     # Compute disparity map
     disparity = stereoProcessor.compute(gray1, gray2)  # Ensure disparity is 16-bit signed single-channel
     disparity = disparity.astype(np.int16)  # Ensure the disparity is in the correct format for filterSpeckles
+    #disparity = cv2.medianBlur(disparity, 5)
     
     # Apply speckle filter
     cv2.filterSpeckles(disparity, 0, 40, max_disparity)
@@ -249,18 +460,18 @@ while True:
     disparity_display = cv2.normalize(disparity, None, 0, 255, cv2.NORM_MINMAX)
     disparity_display = np.uint8(disparity_display)
 
-    # Process both frames with YOLO
-    results1 = model(undistorted_rectifiedL, stream=True)
-    results2 = model(undistorted_rectifiedR, stream=True)
+    # Start a new thread to process results
+    with thread_lock:  # Ensure no other thread is running
+        threading.Thread(target=proccessResults, args=(undistorted_rectifiedL, disparity,), daemon=True).start()
 
     # Display the Feeds
     cv2.imshow('Camera 1', undistorted_rectifiedL)
     cv2.imshow('Camera 2', undistorted_rectifiedR)
     cv2.imshow('Disparity Map', disparity_display)  # Show disparity map
-    
-    # Speak + Print Results
-    process_frame(undistorted_rectifiedL, results1, disparity)
-    #process_frame(undistorted_rectifiedR, results2, disparity)
+    disparity_colour_mapped = cv2.applyColorMap(
+            (disparity_display * (256. / max_disparity)).astype(np.uint8),
+            cv2.COLORMAP_HOT)
+    cv2.imshow('Color', disparity_colour_mapped)
     
     if cv2.waitKey(1) == ord('s'):
         swapLeft = not swapLeft

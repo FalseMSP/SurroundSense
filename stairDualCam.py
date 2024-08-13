@@ -8,17 +8,26 @@ from playsound import playsound
 import os
 import threading
 import simpleaudio as sa
+import datetime
+#import smbus
 
+# I2C bus
+#bus = smbus.SMBus(1)  # For Jetson boards, /dev/i2c-1 is typically used
 
+# PCF8591 address
+#PCF8591_ADDRESS = 0x48
 
 # Constants
 FOCAL_LENGTH = 930.3284425137067  # In PIXELS
 DIST_BETWEEN_CAMERAS = 0.11945  # In meters
 the_T = np.array([DIST_BETWEEN_CAMERAS, 0, 0], dtype=np.float64)
-calibration_path = "/home/bob/SurroundSense/calibration/01-08-24-14-09-rms-0.59-zed-0-ximea-0"
+calibration_path = "/home/bob/SurroundSense/calibration/08-08-24-15-05-rms-1.15-zed-0-ximea-0"
 
 # init flags
-swapLeft = True
+swapLeft = False
+disableProg = False
+TTS = True
+beeper = True
 # Load YOLO model
 try:
     model = YOLO("yolov8n.pt")
@@ -45,6 +54,8 @@ cap2.set(4, 480)
 
 # Initialize the pyttsx3 engine
 engine = pyttsx3.init()
+
+lastSpeak = ""
 
 # Object classes
 classNames = ["person", "bicycle", "car", "motorbike", "aeroplane", "bus", "train", "truck", "boat",
@@ -91,6 +102,85 @@ def speak(text):
     except Exception as e:
         print(f"Exception during speech: {e}")
 
+#Stair Detection
+def detect_stairs(frame):
+    # Get image dimensions
+    height, width = frame.shape[:2]
+
+    # Define the region of interest (bottom 10% of the image)
+    bottom_region = int(height * 0.40)
+    roi = frame[-bottom_region:, :]  # Crop the bottom 10%
+
+    # Convert roi to grayscale
+    gray = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY)
+
+    # Apply GaussianBlur to reduce noise and improve edge detection
+    blurred = cv2.GaussianBlur(gray, (5, 5), 0)
+
+    # Detect edges using Canny edge detector
+    edges = cv2.Canny(blurred, 50, 150)
+
+    # Detect lines using Hough Line Transform
+    lines = cv2.HoughLines(edges, 1, np.pi / 180, 100)  # Adjust the threshold if needed
+
+    # Draw only horizontal lines on the original frame
+    result_frame = frame.copy()
+
+    if lines is not None:
+        # Store lines that are considered horizontal
+        horizontal_lines = []
+        
+        for rho, theta in lines[:, 0]:
+            # Convert polar coordinates (rho, theta) to Cartesian coordinates
+            a = np.cos(theta)
+            b = np.sin(theta)
+            x0 = a * rho
+            y0 = b * rho
+            x1 = int(x0 + 1000 * (-b))
+            y1 = int(y0 + 1000 * (a))
+            x2 = int(x0 - 1000 * (-b))
+            y2 = int(y0 - 1000 * (a))
+            
+            # Compute the angle of the line in degrees
+            angle = np.degrees(np.arctan2(y2 - y1, x2 - x1))
+            
+            # Normalize angle to be between 0 and 180
+            angle = np.abs(angle % 180)
+            
+            # Check if the line is approximately horizontal
+            if (angle < 10 or angle > 170):
+                # Translate line coordinates to match the original frame
+                y1 += height - bottom_region
+                y2 += height - bottom_region
+                horizontal_lines.append((x1, y1, x2, y2))
+                # Draw the line on the result frame
+                cv2.line(result_frame, (x1, y1), (x2, y2), (0, 255, 0), 2)
+
+        # Determine if there are at least 5 parallel lines that are not too close to each other
+        if len(horizontal_lines) >= 5:
+            # Sort lines by their vertical intercept (y0 + b * x0) to approximate their positions
+            def get_y_intercept(line):
+                x1, y1, x2, y2 = line
+                return (y1 + y2) / 2
+            
+            horizontal_lines.sort(key=get_y_intercept)
+
+            # Check the distances between consecutive lines
+            min_lines_count = 5
+            min_distance = 30  # Minimum distance between lines to consider them separate
+            count_valid_lines = 1  # At least one line is valid initially
+            last_y_intercept = get_y_intercept(horizontal_lines[0])
+            
+            for i in range(1, len(horizontal_lines)):
+                current_y_intercept = get_y_intercept(horizontal_lines[i])
+                if abs(current_y_intercept - last_y_intercept) >= min_distance:
+                    count_valid_lines += 1
+                    last_y_intercept = current_y_intercept
+            
+            if count_valid_lines >= min_lines_count:
+                speak("Stairs Ahead")
+    
+    return result_frame, edges
 # Function to play a tone based on object height and depth
 def play_tone(y_position, image_height, duration=250, depth=0.5):
     """
@@ -129,13 +219,61 @@ def play_tone(y_position, image_height, duration=250, depth=0.5):
     play_obj.wait_done()
 # Set up defaults for disparity calculation
 max_disparity = 128
-stereoProcessor = cv2.StereoSGBM_create(0, max_disparity, 21)
+stereoProcessor = cv2.StereoSGBM_create(
+    minDisparity=0,
+    numDisparities=16 * 4,  # Must be divisible by 16
+    blockSize=4,
+    P1=8 * 3 * 4 ** 2,  # Default value: 8*3*blockSize^2
+    P2=32 * 3 * 4 ** 2,  # Default value: 32*3*blockSize^2
+    disp12MaxDiff=1,
+    preFilterCap=63,
+    uniquenessRatio=10,
+    speckleWindowSize=100,
+    speckleRange=32
+)
 
 keep_processing = True
 apply_colourmap = False
 
 # Time tracking
 last_print_time = time.time()
+
+# Joystick functions
+def read_analog_input(channel):
+    if channel < 0 or channel > 3:
+        raise ValueError("Channel must be between 0 and 3")
+    # Command to select the channel (0x40 is the base command, add channel number)
+    bus.write_byte(PCF8591_ADDRESS, 0x40 | channel)
+    time.sleep(0.1)  # Wait for the conversion to complete
+    return bus.read_byte(PCF8591_ADDRESS)  # Read the ADC value
+
+def direction():
+    # Read analog values from channels
+    x_value = read_analog_input(0)
+    y_value = read_analog_input(2)
+    button_value = read_analog_input(1)
+    
+    # Determine if the button is pressed
+    button_pressed = button_value <= 30
+    
+    # Determine the joystick direction
+    if x_value <= 30:
+        x = -1  # Left
+    elif x_value >= 225:
+        x = 1   # Right
+    else:
+        x = 0
+
+    if y_value <= 30:
+        y = -1  # Up
+    elif y_value >= 225:
+        y = 1   # Down
+    else:
+        y = 0
+    
+    # Return (x, y) coordinates and button pressed state
+    return (x, y, button_pressed)
+
 
 # Helper for proccess_frame
 def mode(a, axis=0):
@@ -156,6 +294,7 @@ def mode(a, axis=0):
 
 def process_frame(img, results, disparity):
     global last_print_time
+    global lastSpeak
 
     img_center_x = img.shape[1] // 2
     img_center_y = img.shape[0] // 2
@@ -173,6 +312,11 @@ def process_frame(img, results, disparity):
             box_center_x = (x1 + x2) // 2
             box_center_y = (y1 + y2) // 2
             distance = math.sqrt((box_center_x - img_center_x) ** 2 + (box_center_y - img_center_y) ** 2)
+            if classNames[int(box.cls[0])] == "clock":
+                currtime = datetime.datetime.now()
+                currtime = currtime.strftime("%H:%M")
+                if TTS:
+                    speak(f"The time is currently {currtime}")
 
             if distance < min_distance and (classNames[int(box.cls[0])] not in ignore_list):
                 min_distance = distance
@@ -227,15 +371,29 @@ def process_frame(img, results, disparity):
                 if median_disparity > 0:
                     distance = (focal_length * baseline) / median_disparity  # distance in meters
                     distance *= 7 * 1.93934426
+                    realdist = distance
                     distance /= 5 # Max Loudness is 1
+                    if lastSpeak == f"{object_name} {realdist:.0f} meters ahead":
+                        TTS = False
+                    else:
+                        TTS = True
+                    lastSpeak = f"{object_name} {realdist:.0f} meters ahead"
                     if distance >= 1:
                         distance = 1 # Clamping for the volume of tone
                     distance = 1-distance
-                    play_tone(central_y1,img.shape[0],250,distance)
-
+                    if beeper:
+                        play_tone(central_y1,img.shape[0],250,distance)
+                    if realdist < 1:
+                        print(f"{object_name} {realdist:.2f} meters ahead")
+                        if TTS:
+                            speak(f"{object_name} less than a meter ahead")
+                        return
+                    if realdist > 7:
+                        return
                     # Print and say the object
-                    print(f"{object_name} ahead")
-                    speak(f"{object_name} ahead")
+                    print(f"{object_name} {realdist:.2f} meters ahead")
+                    if TTS:
+                        speak(f"{object_name} {realdist:.0f} meters ahead")
 def disparity_to_distance(disparity, focal_length, baseline):
     """
     Convert disparity value to distance.
@@ -296,14 +454,61 @@ def proccessResults(undistorted_rectifiedL, disparity):
         # results2 = model(undistorted_rectifiedR, stream=True)
 
         # Speak + Print Results
+        detect_stairs(undistorted_rectifiedL)
         process_frame(undistorted_rectifiedL, results1, disparity)
         # process_frame(undistorted_rectifiedR, results2, disparity)
 
+button_pressed = False
+x = 0
+y = 0
+
 while True:
+    # x, y, button_pressed = direction()
+    # Handle on/off through joystick press
+    if button_pressed == True:
+        disableProg = not disableProg
+        # Release Camera
+        if disableProg:
+            cap1.release()
+            cap2.release()
+            speak("Power Off")
+        else: # Reactivate Camera
+            cap1 = cv2.VideoCapture(1)
+            cap1.set(3, 640)
+            cap1.set(4, 480)
+            
+            cap2 = cv2.VideoCapture(0)
+            cap2.set(3, 640)
+            cap2.set(4, 480)
+            speak("Power On")
+            TTS = True
+            beeper = True
+        time.sleep(2)
+    if disableProg:
+        time.sleep(0.1)
+        continue;
+
+    if x == 1:
+        # Right, TTS ON
+        TTS = True
+        speak("Speaking on")
+    elif x == -1:
+        # LEFT, TTS OFF
+        TTS = False
+        speak("Speaking off")
+
+    if y == 1:
+        # UP, Beeper OFF
+        beeper = True
+        speak("Beeper On")
+    elif y == -1:
+        # DOWN, Beeper ON
+        beeper = False
+        speak("Beeper Off")
+    # Remove buffer from camera feeed
     for i in range(0, 25):
         cap1.read()
-        cap2.read()
-    
+        cap2.read() 
     if swapLeft:
         success1, frameL = cap1.read()
         success2, frameR = cap2.read()
@@ -326,6 +531,7 @@ while True:
     # Compute disparity map
     disparity = stereoProcessor.compute(gray1, gray2)  # Ensure disparity is 16-bit signed single-channel
     disparity = disparity.astype(np.int16)  # Ensure the disparity is in the correct format for filterSpeckles
+    #disparity = cv2.medianBlur(disparity, 5)
     
     # Apply speckle filter
     cv2.filterSpeckles(disparity, 0, 40, max_disparity)
@@ -342,6 +548,10 @@ while True:
     cv2.imshow('Camera 1', undistorted_rectifiedL)
     cv2.imshow('Camera 2', undistorted_rectifiedR)
     cv2.imshow('Disparity Map', disparity_display)  # Show disparity map
+    disparity_colour_mapped = cv2.applyColorMap(
+            (disparity_display * (256. / max_disparity)).astype(np.uint8),
+            cv2.COLORMAP_HOT)
+    cv2.imshow('Color', disparity_colour_mapped)
     
     if cv2.waitKey(1) == ord('s'):
         swapLeft = not swapLeft
