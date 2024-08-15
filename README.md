@@ -13,6 +13,7 @@ If you haven't set up the configuration file, run stereothingy.py
 
 
 **Full instalation Guide:**
+
 _Step 1_:
 Acquire:
 2 Logitech c270s or high resolution USB cameras
