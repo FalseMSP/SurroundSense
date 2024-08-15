@@ -37,8 +37,8 @@ Plug in cameras and speaker
 Run stereothingy.py
 Follow instructions shown in the program
 _Step 5_:
-Open readDualCam.py and change “calibration_path” to the path the calibration file created by stereothingy.py
-Also change FOCAL_LENGTH and DIST_BETWEEN_CAMERAS to match your hardware specs
+Open readDualCam.py and change ```calibration_path``` to the path the calibration file created by stereothingy.py
+Also change ```FOCAL_LENGTH``` and ```DIST_BETWEEN_CAMERAS``` to match your hardware specs
 _Step 6_:
 Set readDualCam.py to be run on startup
 You did it!!
