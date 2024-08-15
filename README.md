@@ -25,7 +25,10 @@ You can use Balena Etcher
 
 Step 3:
 Install python3.11
-pip install pytorch, numpy, opencv-python, ultralytics, pyttsx3, simpleaudio
+pip install pytorch, numpy, opencv-python, ultralytics, pyttsx3, simpleaudio, pytesseract
+also use your package installer to get tesseract-ocr
+```sudo apt get tessearct```
+
 
 Step 4:
 Plug in cameras and speaker
