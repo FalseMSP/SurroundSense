@@ -1,10 +1,18 @@
-The main file is stairDualCam.py
+SurroundSense is CPSE Project to assist Blind or Low Vision people in performing day-to-day tasks independently.
+
+Current Features include:
+- Object Detection
+- Distance Detection
+- TTS
+- Reading Signs
+
+The main file is readDualCam.py
 Just run that at startup with a speaker and two cameras plugged in.
 
 If you haven't set up the configuration file, run stereothingy.py
 
 
-Full instalation Guide:
+**Full instalation Guide:**
 Step 1:
 Acquire:
 2 Logitech c270s or high resolution USB cameras
@@ -24,10 +32,10 @@ Plug in cameras and speaker
 Run stereothingy.py
 Follow instructions shown in the program
 Step 5:
-Open stairDualCam.py and change “calibration_path” to the path the calibration file created by stereothingy.py
+Open readDualCam.py and change “calibration_path” to the path the calibration file created by stereothingy.py
 Also change FOCAL_LENGTH and DIST_BETWEEN_CAMERAS to match your hardware specs
 Step 6:
-Set stairDualCam.py to be run on startup
+Set readDualCam.py to be run on startup
 You did it!!
 Woohoo
 I'm so proud of you!
