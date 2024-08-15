@@ -9,14 +9,7 @@ import os
 import threading
 import simpleaudio as sa
 import datetime
-import pytesseract
-#import smbus
-
-# I2C bus
-#bus = smbus.SMBus(1)  # For Jetson boards, /dev/i2c-1 is typically used
-
-# PCF8591 address
-#PCF8591_ADDRESS = 0x48
+import pytesserac
 
 # Constants
 FOCAL_LENGTH = 930.3284425137067  # In PIXELS
@@ -70,6 +63,7 @@ classNames = ["person", "bicycle", "car", "motorbike", "aeroplane", "bus", "trai
               "diningtable", "toilet", "tvmonitor", "laptop", "mouse", "remote", "keyboard", "cell phone",
               "microwave", "oven", "toaster", "sink", "refrigerator", "book", "clock", "vase", "scissors",
               "teddy bear", "hair drier", "toothbrush"]
+# List of items that are ignored based on having high false-positive
 ignore_list = [
     "car", "motorbike", "aeroplane", "bus", "train", "truck", "boat",
     "traffic light", "fire hydrant", "stop sign", "parking meter", "bird", "cat",
@@ -104,7 +98,7 @@ def speak(text):
     except Exception as e:
         print(f"Exception during speech: {e}")
 
-#Stair Detection
+# Stair Detection
 def detect_stairs(frame):
     # Get image dimensions
     height, width = frame.shape[:2]
@@ -183,6 +177,7 @@ def detect_stairs(frame):
                 speak("Stairs Ahead")
     
     return result_frame, edges
+    
 # Function to play a tone based on object height and depth
 def play_tone(y_position, image_height, duration=250, depth=0.5):
     """
@@ -219,6 +214,7 @@ def play_tone(y_position, image_height, duration=250, depth=0.5):
     # Play the tone
     play_obj = sa.play_buffer(audio, 1, 2, sample_rate)
     play_obj.wait_done()
+    
 # Set up defaults for disparity calculation
 max_disparity = 128
 stereoProcessor = cv2.StereoSGBM_create(
@@ -239,43 +235,6 @@ apply_colourmap = False
 
 # Time tracking
 last_print_time = time.time()
-
-# Joystick functions
-def read_analog_input(channel):
-    if channel < 0 or channel > 3:
-        raise ValueError("Channel must be between 0 and 3")
-    # Command to select the channel (0x40 is the base command, add channel number)
-    bus.write_byte(PCF8591_ADDRESS, 0x40 | channel)
-    time.sleep(0.1)  # Wait for the conversion to complete
-    return bus.read_byte(PCF8591_ADDRESS)  # Read the ADC value
-
-def direction():
-    # Read analog values from channels
-    x_value = read_analog_input(0)
-    y_value = read_analog_input(2)
-    button_value = read_analog_input(1)
-    
-    # Determine if the button is pressed
-    button_pressed = button_value <= 30
-    
-    # Determine the joystick direction
-    if x_value <= 30:
-        x = -1  # Left
-    elif x_value >= 225:
-        x = 1   # Right
-    else:
-        x = 0
-
-    if y_value <= 30:
-        y = -1  # Up
-    elif y_value >= 225:
-        y = 1   # Down
-    else:
-        y = 0
-    
-    # Return (x, y) coordinates and button pressed state
-    return (x, y, button_pressed)
-
 
 # Helper for proccess_frame
 def mode(a, axis=0):
@@ -309,6 +268,7 @@ def detectText(frame):
     # Return the matching words as a single string
     return ' '.join(matching_words)
 
+# Main image processing pipeline
 def process_frame(img, results, disparity):
     global last_print_time
     global lastSpeak
@@ -480,9 +440,8 @@ x = 0
 y = 0
 
 while True:
-    # x, y, button_pressed = direction()
     # Handle on/off through joystick press
-    if button_pressed == True:
+    if button_pressed == True: # Unused Code
         disableProg = not disableProg
         # Release Camera
         if disableProg:
